@@ -52,7 +52,19 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
     aria.set_log_level(aria.Level.Info)
+    
         
+    #
+    # read hand icons with alpha layer.
+    #
+    grab = cv2.imread("Icons/Hand_Grab.png", cv2.IMREAD_UNCHANGED) 
+    mid = cv2.imread("Icons/Hand_Mid.png", cv2.IMREAD_UNCHANGED) 
+    full = cv2.imread("Icons/Hand_Full_Open.png", cv2.IMREAD_UNCHANGED) 
+    icons_list = [ grab, mid, full ]
+    
+    # aria_visualizer.singleCameraObserver.icons[hand_pose.GRABBING] = grab
+    # aria_visualizer.singleCameraObserver.icons.icons[hand_pose.MID] = mid
+    # aria_visualizer.singleCameraObserver.icons.icons[hand_pose.FULL_OPEN] = full
         
     device_client = aria.DeviceClient()
     client_config = aria.DeviceClientConfig()
@@ -92,7 +104,7 @@ def main():
 
 
     # 7. Create the visualizer observer and attach the streaming client
-    aria_visualizer = AriaVisualizer()
+    aria_visualizer = AriaVisualizer(icons_list=icons_list)
     aria_visualizer_streaming_client_observer = AriaVisualizerStreamingClientObserver(
         aria_visualizer
     )
@@ -101,17 +113,7 @@ def main():
     # 8. set the Observer streaming client to the Aria Visualizer.
     aria_visualizer.set_single_camera_observer( udp_socket=udp_socket, remote_ip=args.remote_ip,
         remote_port=args.remote_port, shrink_factor=args.shrink_factor)
-    
-    #
-    # read hand icons.
-    #
-    # grab = cv2.imread("Hand_Grab.png") 
-    # mid = cv2.imread("Hand_Mid.png") 
-    # full = cv2.imread("Hand_Full_Open.png") 
-    # cv2.waitKey(0)
-    # aria_visualizer.singleCameraObserver.icons[hand_pose.GRABBING] = grab
-    # aria_visualizer.singleCameraObserver.icons.icons[hand_pose.MID] = mid
-    # aria_visualizer.singleCameraObserver.icons.icons[hand_pose.FULL_OPEN] = full
+
     
     
     streaming_client.set_streaming_client_observer(

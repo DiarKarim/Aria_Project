@@ -136,17 +136,9 @@ class SingleCameraObserver:
     and optionally sends the shrunk frame over UDP.
     """
     
-    # ----------------------------------------------------------------
-    def read_image(fname:str)->np.ndarray:
-        img = cv2.imread(str)
-        if img is None:
-            print(f"SingleCameraObserver:read_image: Could not read ",fname,".")
-        else:
-            print(fname, " loaded successfully!")
-        return img 
-        
+     
     # ---------------------------------------------------------------
-    def __init__(self):
+    def __init__(self, icons_list:list):
         self._udp_socket = None
         self._remote_ip = "127.0.0.1"
         self._remote_port = 8899
@@ -156,10 +148,18 @@ class SingleCameraObserver:
         self._mp_drawing = mp.solutions.drawing_utils
         self._hand = mp.solutions.hands.Hands()
         
-        self.icons={}       
-        # self.icons[hand_pose.GRABBING] = self.read_image("~/Code/ARIA/Icons/Hand_Grab.png") 
-        # self.icons[hand_pose.MID] = self.read_image("~/Code/ARIA/Icons/Hand_Mid.png") 
-        # self.icons[hand_pose.FULL_OPEN] = self.read_image("~/Code/ARIA/Icons/Hand_Full_Open.png") 
+        self.hand_state = hand_pose.MID
+        
+        if len(icons_list)>=3:
+            print("Setting icon dictionary")
+            self.icons={
+                hand_pose.GRABBING:icons_list[0], 
+                hand_pose.MID:icons_list[1],
+                hand_pose.FULL_OPEN:icons_list[2],
+            }
+            print("dictionary size =", len(self.icons))
+        else:
+            print("SingleCameraObserver:__init__: ERROR: Failed to recice a list of 3 hand icons.")
 
     def set(self, udp_socket=None, remote_ip="127.0.0.1", remote_port=8899, shrink_factor=0.25):
         self._udp_socket = udp_socket
@@ -168,16 +168,34 @@ class SingleCameraObserver:
         self._shrink_factor = shrink_factor
 
     # ------------------------------------------------------------------------
-    def draw_debug_traingle(self, ind, pink, thumb, p_rt, ind_rt, cnt, color, img:np.ndarray=None):
+    def draw_hand_state(self, ind, pink, thumb, p_rt, ind_rt, cnt, color, img:np.ndarray=None):
+        
+        h,w,_ = img.shape
+        
+        # finger tips triangle
         # cv2.line(img, ind, pink, (255,0,0), 2)
         # cv2.line(img, thumb, pink, (255,0,0), 2)
-        # cv2.line(img, ind, thumb, (255,0,0), 2)         
+        # cv2.line(img, ind, thumb, (255,0,0), 2) 
+                
         # # scaling distance
         # cv2.line(img, p_rt, ind_rt, (0,0,255), 2)
-        # area
-        cv2.circle(img, cnt, 20, color, -1)    
-    
         
+        # state
+        #cv2.circle(img, cnt, 20, color, 2)    
+        
+        # icon
+        if len(self.icons)>=3:
+            sicon = cv2.resize(self.icons[self.hand_state], None, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+            ih, iw,_ = sicon.shape
+            st_x, st_y = cnt[0]-int(iw/2), cnt[1]-int(ih/2)
+            end_x, end_y = st_x + iw, st_y + ih
+            
+            # if the icon image is within the image area.
+            if st_x>=0 and st_y>=0 and end_x<w and end_y<h:
+                for color in range(0, 3):
+                    ret, mask = cv2.threshold(sicon[:,:,color], 252, 255, cv2.THRESH_BINARY_INV)
+                    img[st_y : end_y, st_x : end_x, color] = (255-img[st_y : end_y, st_x : end_x, color]) * cv2.bitwise_not(mask) + sicon[:,:,color] * mask  
+
     #
     # if the hand open - measured by the area defined by the finger tips
     # ------------------------------------------------------------------------
@@ -196,20 +214,20 @@ class SingleCameraObserver:
         #        print("polygon area = ", round(polygon.area, 2), "area = ", round(area,2), "len_sq = ", round(length_sq, 2))       
         
         color = (255,255,255)
-        hand_state = hand_pose.FULL_OPEN
+        self.hand_state = hand_pose.FULL_OPEN
         if area<0.5:
             if area>=0.1:
                color = (0,255,0)
-               hand_state = hand_pose.MID
+               self.hand_state = hand_pose.MID
             else:
                 color = (0,0,255)
-                hand_state = hand_pose.GRABBING
+                self.hand_state = hand_pose.GRABBING
                    
         center = polygon.centroid
         if h>0 and w>0:
-            self.draw_debug_traingle(ind, pink, thumb, p_rt, ind_rt, (int(center.x), int(center.y)), color, img)
+            self.draw_hand_state(ind, pink, thumb, p_rt, ind_rt, (int(center.x), int(center.y)), color, img)
         
-        return hand_state
+        return self.hand_state
 
     # ------------------------------------------------------------------------
     def draw_finger_tips(self, index_tip, middle_tip, ring_tip, pinky_tip, thumb_tip, h:int=0, w:int=0, img:np.ndarray=None): 
@@ -261,7 +279,7 @@ class SingleCameraObserver:
 # --------------------------------------------------------------------------------------
 class AriaVisualizer:
 
-    def __init__(self):
+    def __init__(self, icons_list:list):
         self.plots = fpl.Figure(shape=(1, 2), names=[["frame", "detection"]], size=(1200, 800) )
         # fpl.GridPlot(shape=(1, 2), size=(1200, 800) )
             
@@ -271,7 +289,7 @@ class AriaVisualizer:
             aria.CameraId.Rgb: self.plots[0, 0].add_image(
                 np.zeros((1408, 1408, 3), dtype="uint8"), vmin=0, vmax=255, ),
         }
-        self.singleCameraObserver = SingleCameraObserver()
+        self.singleCameraObserver = SingleCameraObserver(icons_list=icons_list)
         self.processed_image = np.zeros((352, 352, 3), dtype="uint8")
 
 
