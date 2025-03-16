@@ -5,9 +5,11 @@ import math
 import aria.sdk as aria
 import fastplotlib as fpl
 import numpy as np
+from ultralytics import YOLO
 import cv2
 import shapely as shp
 from enum import Enum
+from ultralytics import YOLO
 
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -22,7 +24,7 @@ from projectaria_tools.core.sensor_data import (ImageDataRecord,)
 
 #
 # Histogram
-# ---------------------------------------------------------------------
+# ===============================================================================================
 class HistHS:
 
     def __init__(self):
@@ -31,7 +33,7 @@ class HistHS:
         self._bins = 25
 
     def calc_hsv(self, back_hsv:np.ndarray):
-        self._back_hist = cv2.calcHist([back_hsv], [0, 1], None, [12, 12], [0, 181, 0, 256])
+        self._byolo_modelack_hist = cv2.calcHist([back_hsv], [0, 1], None, [12, 12], [0, 181, 0, 256])
         #cv2.normalize(self._back_hist, self._back_hist, 0, 255, cv2.NORM_MINMAX, -1)
 
     def back_project(self, img:np.ndarray)->np.ndarray:
@@ -47,7 +49,7 @@ class HistHS:
 
 #
 # Measure of Saliency
-# ----------------------------------------
+# ===============================================================================================
 class Saliency:
     def __init__(self):
         self.saliency_spectral = cv2.saliency.StaticSaliencySpectralResidual.create()
@@ -127,9 +129,187 @@ class hand_pose(Enum):
     FULL_OPEN = 3
     
     
+#
+# ===============================================================================================
+class HistHS:
+
+    def __init__(self):
+
+        self._back_hist = None
+        self._bins = 25
+
+    def calc_hsv(self, back_hsv:np.ndarray):
+        self._byolo_modelack_hist = cv2.calcHist([back_hsv], [0, 1], None, [12, 12], [0, 181, 0, 256])
+        #cv2.normalize(self._back_hist, self._back_hist, 0, 255, cv2.NORM_MINMAX, -1)
+
+    def back_project(self, img:np.ndarray)->np.ndarray:
+        img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        bp = cv2.calcBackProject([img_hsv], [0, 1], self._back_hist, [0, 180, 0, 256], 1)
+        return bp
+
+    def back_project_mask(self, img:np.ndarray, disk_kernel)->np.ndarray:
+        bp = self.back_project(img)
+        dst = cv2.filter2D(bp, -1, disk_kernel)
+        #_,mask = cv2.threshold(bp, 70, 255, 0)
+        return dst
     
+# a detected device (out of tv, laptop, mouse, remote, keyboard, cell phone, microwave, book, clock)
+# ===============================================================================================
+class Device:
+
+    def __init__(self):
+        self._name = 'laptop'
+        self._bbox = (0,0,1,1)
+        self._conf = 0.0
+        self._input = -1
+        self._output = -1
+        self._command=-1
+        self._ip_add=""
+        
+    def set(self, name, bbox, conf):
+        self._name = name
+        self._bbox = bbox   # deep copy? 
+        self._conf = conf
+            
+    # Given the center of the finger tips, find the relative location in the device bbox.
+    # this is used for selection of modality.
+    # If the hand is in the bbox, it returns a value of x & y in the range [0.1], otherwize returns (-1,-1)
+    # ----------------------------------------------------------------------------------
+    def relative_position(self, hx, hy)->list[float]:
+        (x, y, x2, y2) = self._bbox
+        if hx<x or hy<y or hx>x2 or hy>y2:
+            return (-1,-1)
+        return [(float(hx)-float(x))/(float(x2) - float(x)), (float(hy)-float(y))/(float(y2) - float(y))]
     
-# -----------------------------------------------------------------------
+    # ----------------------------------------------------------------------------------
+    def color(self):
+        if self._name == 'tv':
+            return (255, 255, 255) # white
+        if self._name == 'laptop':
+            return (255, 255, 0) # yellow
+        if self._name == 'mouse':
+            return (100, 100, 100) # gray
+        if self._name == 'remote': 
+            return (255, 000, 255) # purple
+        if self._name == 'keyboard':
+            return (100, 255, 100) # green
+        if self._name == 'cell phone':
+            return (100, 255, 255) # Turcoise                
+        if self._name == 'microwave':
+            return (255, 128, 128)   
+        if self._name == 'book':
+            return (255, 255, 180) # bright yellow 
+        if self._name == 'clock':
+            return (255, 0, 128)       
+        return (0,0,0)
+                     
+    def print(self): 
+        print("device: ", self._name, " bbox: ", self._bbox, " conf ", self._conf)   
+    
+    # ------------------------------------------------------------------------
+    def draw(self, img):
+        if (self._conf==0.0):
+            return     
+        (x, y, x2, y2) = self._bbox
+        color = self.color()
+        cv2.rectangle(img, (x, y), (x2, y2), color, 2)
+        cv2.putText(img, f"{self._name}: {self._conf:.2f}", (x, y - 5), cv2.FONT_HERSHEY_PLAIN, 1, color, 2)
+    
+    # ------------------------------------------------------------------------
+    def draw_hand_location(self, img, hand_x, hand_y):
+        if (self._conf==0.0):
+            return     
+        (x, y, x2, y2) = self._bbox
+        color = self.color()
+        [rx, ry] = self.relative_position(hand_x, hand_y)
+        if rx>=0 and ry>=0:
+            col = int(x + rx * (x2-x))
+            row = int(y + ry * (y2-y))
+            cv2.line(img, (x, row), (x2, row), color, 2)
+            cv2.line(img, (col, y), (col, y2), color, 2)
+                
+                
+                
+# list of detected devices
+# ===============================================================================================
+class ListOfDevices:              
+                
+    def __init__(self):
+        self._devices = []
+    
+    #
+    # set the devices used for the demo.
+    #
+    def start(self):
+        laptop = Device()
+        laptop._name = 'laptop'
+        laptop._ip_add='127.0.0.1'
+        self._devices.append(laptop)
+        
+        phone = Device()
+        phone._name = 'cell phone'
+        phone._ip_add='127.0.0.1'
+        self._devices.append(phone)
+        
+        mouse = Device()
+        mouse._name = 'mouse'
+        mouse._ip_add='127.0.0.1'
+        self._devices.append(mouse)
+    
+    def reset_conf(self):
+        for d in self._devices:
+            d._conf = 0.0
+              
+    #
+    # if the set for this experiment contains this class - return it
+    # otherwise, return None
+    #
+    def update_exist(self, name:str, bbox, conf:float)->Device:
+        for d in self._devices:
+            if d._name==name:
+                d._bbox = bbox
+                d._conf = conf
+                return d
+        return None
+        
+    def append(self, d):
+        if not (d is None):
+            self._devices.append(d)
+                
+    def draw(self, img):
+        for d in self._devices:
+            if d._conf>0.0:
+                d.draw(img)         
+                
+    def first_touched(self, x, y):
+        for d in self._devices:
+            if d._conf>0.0:
+                [hx,hy] = d.relative_position(x, y)
+                if hx>=0 and hy>=0: 
+                    return [d,hx,hy]    
+        return [None,-1,-1]   
+    
+    # Return another detection of class 'cls' that the current detection 'd' lies in it.
+    # if none, returns None.
+    # -------------------------------------------------------------------------------------------
+    def find_overlapping_detection(self, d, cls:str='')->Device:
+        (x, y, x2, y2) = d._bbox        
+        for p in self._devices:
+            if cls == '' or p.name == cls:
+                (lx, ly, lx2, ly2) = p._bbox
+                if lx<=x and lx2>= x2 and ly<=y and ly2>=y2:
+                    return p
+        return None
+    
+    # Reneter the first detection of class 'cls'. if none, returns None.
+    # -------------------------------------------------------------------------------------------
+    def find_next_detection(self, cls='')->Device:     
+        for p in self._devices:
+            if cls == '' or p.name == cls:
+                return p
+        return None
+                            
+# ===============================================================================================
 class SingleCameraObserver:
     """
     Observer that shrinks the image, prints out its shape,
@@ -150,8 +330,18 @@ class SingleCameraObserver:
         
         self.hand_state = hand_pose.MID
         
+        # Define configuration constants
+        self._CONFIDENCE_THRESHOLD_LIMIT = 0.6
+        self._BOX_COLOUR = (0, 255, 0)
+
+        # Load the YOLO model
+        print("Read Yolo Model ---------------")
+        self._yolo_model = YOLO("./Models/yolo11n.pt")
+        self._devices = ListOfDevices()
+        self._devices.start()
+        self._devices.reset_conf()
+        
         if len(icons_list)>=3:
-            print("Setting icon dictionary")
             self.icons={
                 hand_pose.GRABBING:icons_list[0], 
                 hand_pose.MID:icons_list[1],
@@ -161,6 +351,7 @@ class SingleCameraObserver:
         else:
             print("SingleCameraObserver:__init__: ERROR: Failed to recice a list of 3 hand icons.")
 
+    # ------------------------------------------------------------------------
     def set(self, udp_socket=None, remote_ip="127.0.0.1", remote_port=8899, shrink_factor=0.25):
         self._udp_socket = udp_socket
         self._remote_ip = remote_ip
@@ -198,7 +389,7 @@ class SingleCameraObserver:
 
     #
     # if the hand open - measured by the area defined by the finger tips
-    # ------------------------------------------------------------------------
+    # ------------from ultralytics import YOLO------------------------------------------------------------
     def is_hand_open(self, index_tip, pinky_tip, thumb_tip, pinky_root, index_root, root, h:int=0, w:int=0, img:np.ndarray=None)->hand_pose: 
     
         ind = (int(index_tip.x * w), int(index_tip.y * h))
@@ -229,19 +420,96 @@ class SingleCameraObserver:
         
         return self.hand_state
 
+    # -------------------(x, y, x2, y2) = bboxnd the label on the frame. 
+    # The color of the bounding box depends on the confidence
+    # I gnore most of the detected classes.
     # ------------------------------------------------------------------------
-    def draw_finger_tips(self, index_tip, middle_tip, ring_tip, pinky_tip, thumb_tip, h:int=0, w:int=0, img:np.ndarray=None): 
-        cv2.circle(img, (int(index_tip.x * w), int(index_tip.y * h)), 5, (0,255,0), 2)
-        cv2.circle(img, (int(middle_tip.x * w), int(middle_tip.y * h)), 5, (0,255,0), 2)
-        cv2.circle(img, (int(ring_tip.x * w), int(ring_tip.y * h)), 5, (0,255,0), 2)
-        cv2.circle(img, (int(pinky_tip.x * w), int(pinky_tip.y * h)), 5, (0,255,0), 2)
-        cv2.circle(img, (int(thumb_tip.x * w), int(thumb_tip.y * h)), 5, (0,255,0), 2)
+    def draw_detection_box(self, img, bbox, conf, cls, draw:bool=False)->Device:
+        (x, y, x2, y2) = bbox
         
+        if cls < 62 or cls >=75:
+            # ignore classes of person,bicycle,car,motorcycle,airplane,bus,train,truck,boat,traffic light,
+            # fire hydrant,stop sign,parking meter,bench,giraffe,backpack,umbrella,handbag,tie,suitcase,
+            # frisbee,skis",snowboard,sports ball,kite,baseball bat,baseball glove,skateboard, surfboard,
+            # tennis racket,bottle,wine glass,cup,fork,knife,spoon,bowl,banana,apple,sandwich, orange,
+            # brocolli, carrot, hot dog, pizza, donut, cake, chair, couch, potted plant, bed, dining table, 
+            # toilet, vase, scissors, teddy bear, hair drier and toothbrush
+            #
+            return None        
+        name = self._yolo_model.names[cls]
+        if name == 'toaster' or name == 'sink' or name == 'refrigerator' or name == 'oven':
+            return None
+        
+        # use tv, laptop, mouse, remote, keyboard, cell phone, microwave, book, clock,
+        if draw:
+            color = (250, 66, 100)
+            if conf < self._CONFIDENCE_THRESHOLD_LIMIT:
+                return None
+            if conf > 0.6:
+                color = (37, 245, 75)
+            elif conf > 0.3:
+                color = (66, 100, 245)
+            cv2.rectangle(img, (x, y), (x2, y2), color, 2)
+            cv2.putText(img, f"{name}: {conf:.2f}", (x, y - 5), cv2.FONT_HERSHEY_PLAIN, 1, color, 2)
+        d = Device()
+        d.set(name, bbox, conf)
+        return d
+    
+    # ------------------------------------------------------------------------
+    def stream_frame(self, img):
+        #Stream result frame.
+        if self._udp_socket:
+            success, encoded = cv2.imencode(".jpg", img)
+            if success:
+                frame_jpeg = encoded.tobytes()
+                try:
+                    self._udp_socket.sendto(frame_jpeg, (self._remote_ip, self._remote_port))
+                except Exception as e:
+                    print(f"Error sending UDP packet: {e}") 
+   
+    # ------------------------------------------------------------------------   
+    def yolo_detection(self, img)->ListOfDevices:
+        h, w, _ = img.shape
+
+        #
+        # set all devices that needs to be detected for the demo to zero confidance.
+        #
+        self._devices.reset_conf()
+        
+        yolo_image = img.copy() 
+        if not(self._yolo_model is None):
+            
+            result = self._yolo_model(yolo_image)[0]
+            bboxes = np.array(result.boxes.xyxy.cpu(), dtype="int")
+            classes = np.array(result.boxes.cls.cpu(), dtype="int")
+            confidence = np.array(result.boxes.conf.cpu(), dtype="float")
+
+            # list of relevant detections
+            for cls, bbox, conf in zip(classes, bboxes, confidence):
+                
+                #
+                # for our demos, this detection is modified:
+                # A. It only looks for devices that are part of the demo and ignore other classes.
+                # B. Each such device has updated bounding box and conf.
+                #
+                name = self._yolo_model.names[cls]
+                d = self._devices.update_exist(name, bbox, conf)
+                if d is None:
+                    print("OUT: ",name," with conf ",conf," NOT in the demo. devices len ", len(self._devices._devices))
+                else:
+                    print("IN: ",name," with conf ",conf," IN the demo.", len(self._devices._devices))
+                    #devices.append(self.draw_detection_box(img, bbox, conf, cls, draw=False))
+        return self._devices
+
+    # ------------------------------------------------------------------------
     def on_image_received(self, image: np.ndarray)->np.ndarray:
         shrunk_image = cv2.resize(image, None, fx=self._shrink_factor, fy=self._shrink_factor, interpolation=cv2.INTER_AREA)
 
         h, w, _ = shrunk_image.shape
-            
+        
+        devices = self.yolo_detection(shrunk_image)
+        devices.draw(shrunk_image)
+          
         #
         # Mediapipe hand tracking
         #
@@ -250,33 +518,30 @@ class SingleCameraObserver:
         if result.multi_hand_landmarks:
             
            for hand_landmarks in result.multi_hand_landmarks:
-               
-                index_tip = hand_landmarks.landmark[8]
-                middle_tip = hand_landmarks.landmark[12]
-                ring_tip = hand_landmarks.landmark[16]
-                pinky_tip = hand_landmarks.landmark[20]
-                thumb_tip = hand_landmarks.landmark[4]
-                pinky_root = hand_landmarks.landmark[17]
-                index_root = hand_landmarks.landmark[5]
                 root = hand_landmarks.landmark[0]
-
-                #self.draw_finger_tips(index_tip, middle_tip, ring_tip, pinky_tip, thumb_tip, h, w, img=shrunk_image)            
-                self.is_hand_open(index_tip, pinky_tip, thumb_tip, pinky_root, index_root, root, h, w, shrunk_image)
-    
-        #Stream result frame.
-        # if self._udp_socket:
-        #     success, encoded = cv2.imencode(".jpg", shrunk_image)
-        #     if success:
-        #         frame_jpeg = encoded.tobytes()
-        #         try:
-        #             self._udp_socket.sendto(frame_jpeg, (self._remote_ip, self._remote_port))
-        #         except Exception as e:
-        #             print(f"Error sending UDP packet: {e}")
+                thumb_tip = hand_landmarks.landmark[4]
+                index_root, index_tip = hand_landmarks.landmark[5], hand_landmarks.landmark[8]
+                #middle_tip = hand_landmarks.landmark[12]
+                #ring_tip = hand_landmarks.landmark[16]
+                pinky_root, pinky_tip = hand_landmarks.landmark[17], hand_landmarks.landmark[20]
+        
+                center_tips_x = ((index_tip.x + pinky_tip.x + thumb_tip.x) * w)/3
+                center_tips_y = ((index_tip.y + pinky_tip.y + thumb_tip.y) * w)/3
+       
+                #
+                # Draw hand, only if it lies inside at least one of the device?
+                #
+                [d, hx, hy] = devices.first_touched(center_tips_x, center_tips_y)
+                if not(d is None):
+                    d.draw_hand_location(shrunk_image, hx, hy)
+                    #self.draw_finger_tips(index_tip, middle_tip, ring_tip, pinky_tip, thumb_tip, h, w, img=shrunk_image)            
+                    self.is_hand_open(index_tip, pinky_tip, thumb_tip, pinky_root, index_root, root, h, w, shrunk_image)
+        
+        
         return shrunk_image
 
 #
-# --------------------------------------------------------------------------------------
-# --------------------------------------------------------------------------------------
+# ===============================================================================================
 class AriaVisualizer:
 
     def __init__(self, icons_list:list):
@@ -317,8 +582,7 @@ class BaseStreamingClientObserver:
 
 
 #
-# --------------------------------------------------------------------------------------
-#
+# ===============================================================================================
 class AriaVisualizerStreamingClientObserver(BaseStreamingClientObserver):
     def __init__(self, visualizer: AriaVisualizer):
         self.visualizer = visualizer

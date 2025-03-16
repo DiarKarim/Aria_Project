@@ -5,10 +5,20 @@ import socket
 import numpy as np
 import aria.sdk as aria
 import cv2
+import datetime
+from ultralytics import YOLO
 
 from common import update_iptables
 
 from visualizer import AriaVisualizer, AriaVisualizerStreamingClientObserver, hand_pose
+
+
+# Define configuration constants
+CONFIDENCE_THRESHOLD_LIMIT = 0.5
+BOX_COLOUR = (0, 255, 0)
+
+# Define the device type. Otherwise use "cpu"
+DEVICE = "cpu"
 
 # ------------------------------------------------------------------
 def update_iptables():
@@ -53,7 +63,9 @@ def main():
     args = parse_args()
     aria.set_log_level(aria.Level.Info)
     
-        
+  # Load the YOLO model
+    model = YOLO("./Models/yolo11n-seg.pt") 
+     
     #
     # read hand icons with alpha layer.
     #
